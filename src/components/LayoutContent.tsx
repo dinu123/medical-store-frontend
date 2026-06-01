@@ -9,9 +9,9 @@ interface LayoutContentProps {
 
 export function LayoutContent({ children }: LayoutContentProps) {
   const pathname = usePathname();
-  const isLoginPage = pathname === '/login';
+  const isPublicPage = pathname === '/login' || pathname === '/register';
 
-  if (isLoginPage) {
+  if (isPublicPage) {
     return <>{children}</>;
   }
 

@@ -15,9 +15,9 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger,
 } from '@/components/ui/dropdown-menu';
-import { DataStore } from '@/lib/mock-data';
+import { apiClient } from '@/lib/api-client';
 import { InventoryItem } from '@/types';
-import { formatCurrency, formatDate, exportInventoryReport } from '@/lib/export-utils';
+import { formatCurrency, formatDate } from '@/lib/export-utils';
 import { toast } from 'sonner';
 import { useRouter, useSearchParams } from 'next/navigation';
 
@@ -37,22 +37,21 @@ export default function InventoryPage() {
   const searchParams = useSearchParams();
 
   useEffect(() => {
-    const inventoryData = DataStore.getInventory();
-    setInventory(inventoryData);
-    
-    // Check for filter parameter from URL
-    const filterParam = searchParams.get('filter');
-    if (filterParam === 'low-stock') {
-      setFilters(prev => ({ ...prev, stockStatus: 'low' }));
-    }
-    
-    setFilteredInventory(inventoryData);
-
-    // Show notifications for low stock items
-    const lowStockItems = inventoryData.filter(item => item.isLowStock);
-    if (lowStockItems.length > 0) {
-      toast.warning(`${lowStockItems.length} medicines are running low on stock!`);
-    }
+    const load = async () => {
+      try {
+        const res: any = await apiClient.getInventory();
+        const inventoryData: InventoryItem[] = res.data || [];
+        setInventory(inventoryData);
+        setFilteredInventory(inventoryData);
+        const filterParam = searchParams.get('filter');
+        if (filterParam === 'low-stock') setFilters(prev => ({ ...prev, stockStatus: 'low' }));
+        const lowStockItems = inventoryData.filter(item => item.isLowStock);
+        if (lowStockItems.length > 0) toast.warning(`${lowStockItems.length} medicines are running low on stock!`);
+      } catch (error: any) {
+        toast.error(error.message || 'Failed to load inventory');
+      }
+    };
+    load();
   }, [searchParams]);
 
   useEffect(() => {
@@ -114,17 +113,11 @@ export default function InventoryPage() {
     });
   };
 
-  const handleExport = () => {
+  const handleExport = async () => {
     try {
-      if (filteredInventory.length === 0) {
-        toast.error('No inventory data to export');
-        return;
-      }
-
-      exportInventoryReport(filteredInventory);
+      await apiClient.exportInventory();
       toast.success('Inventory report exported successfully');
     } catch (error) {
-      console.error('Export error:', error);
       toast.error('Failed to export inventory report');
     }
   };
@@ -135,15 +128,11 @@ export default function InventoryPage() {
 
   const handleAddForOrdering = (medicineId: string) => {
     try {
-      const item = filteredInventory.find(item => item.medicineId === medicineId);
+      const item = filteredInventory.find(item => (item.medicine._id || item.medicine.id) === medicineId || item.medicineId === medicineId);
       if (item) {
-        // Add to order items
         setOrderItems(prev => [...prev, item]);
-        
-        // Remove from filtered inventory
         setFilteredInventory(prev => prev.filter(i => i.medicineId !== medicineId));
         setInventory(prev => prev.filter(i => i.medicineId !== medicineId));
-        
         toast.success(`${item.medicine.name} added to order list`);
       }
     } catch (error) {
@@ -165,14 +154,18 @@ export default function InventoryPage() {
   };
 
   const handleEditMedicine = (medicineId: string) => {
-    // In a real app, this would open an edit form
     toast.info('Medicine edit functionality would be implemented here');
   };
 
-  const handleDeleteMedicine = (medicineId: string) => {
+  const handleDeleteMedicine = async (medicineId: string) => {
     if (confirm('Are you sure you want to delete this medicine from inventory?')) {
-      // In a real app, this would delete the medicine
-      toast.success('Medicine deleted from inventory');
+      try {
+        await apiClient.deleteMedicine(medicineId);
+        setInventory(prev => prev.filter(i => i.medicineId !== medicineId));
+        toast.success('Medicine deleted from inventory');
+      } catch (error: any) {
+        toast.error(error.message || 'Failed to delete medicine');
+      }
     }
   };
 

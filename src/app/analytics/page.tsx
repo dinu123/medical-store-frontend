@@ -3,7 +3,7 @@
 import { useEffect, useState } from 'react';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
-import { DataStore } from '@/lib/mock-data';
+import { apiClient } from '@/lib/api-client';
 import { formatCurrency } from '@/lib/export-utils';
 
 import {
@@ -27,21 +27,36 @@ export default function AnalyticsPage() {
   const [dateRange, setDateRange] = useState<string>('');
   const [error, setError] = useState<string>('');
 
+  const [allTransactions, setAllTransactions] = useState<any[]>([]);
+
   // Set default date range (last 6 months)
   useEffect(() => {
     const today = new Date();
     const sixMonthsAgo = new Date();
     sixMonthsAgo.setMonth(today.getMonth() - 6);
-    
     setStartDate(sixMonthsAgo.toISOString().split('T')[0]);
     setEndDate(today.toISOString().split('T')[0]);
   }, []);
 
+  useEffect(() => {
+    const load = async () => {
+      try {
+        const res: any = await apiClient.getTransactions();
+        setAllTransactions(res.data || []);
+      } catch (error) {
+        console.error('Failed to load transactions:', error);
+      }
+    };
+    load();
+  }, []);
+
   const processLineChartData = (start: string, end: string) => {
     if (!start || !end) return [];
-    
-    const salesTransactions = DataStore.getTransactionsByDateRange(start, end).filter(txn => txn.type === 'sell');
-    const purchaseTransactions = DataStore.getTransactionsByDateRange(start, end).filter(txn => txn.type === 'purchase');
+    const startD = new Date(start);
+    const endD = new Date(end);
+    const filtered = allTransactions.filter(t => new Date(t.date) >= startD && new Date(t.date) <= endD);
+    const salesTransactions = filtered.filter(t => t.type === 'sell');
+    const purchaseTransactions = filtered.filter(t => t.type === 'purchase');
     
     const transactionsByMonth: Record<string, { totalRevenue: number; totalSales: number; purchaseCost: number }> = {};
     
@@ -84,8 +99,9 @@ export default function AnalyticsPage() {
 
   const processMonthlySalesData = (start: string, end: string) => {
     if (!start || !end) return [];
-    
-    const salesTransactions = DataStore.getTransactionsByDateRange(start, end).filter(txn => txn.type === 'sell');
+    const startD = new Date(start);
+    const endD = new Date(end);
+    const salesTransactions = allTransactions.filter(t => t.type === 'sell' && new Date(t.date) >= startD && new Date(t.date) <= endD);
     const salesByMonth: Record<string, number> = {};
     
     salesTransactions.forEach(txn => {
@@ -109,8 +125,9 @@ export default function AnalyticsPage() {
 
   const processMonthlyPurchasesData = (start: string, end: string) => {
     if (!start || !end) return [];
-    
-    const purchaseTransactions = DataStore.getTransactionsByDateRange(start, end).filter(txn => txn.type === 'purchase');
+    const startD = new Date(start);
+    const endD = new Date(end);
+    const purchaseTransactions = allTransactions.filter(t => t.type === 'purchase' && new Date(t.date) >= startD && new Date(t.date) <= endD);
     const purchasesByMonth: Record<string, number> = {};
     
     purchaseTransactions.forEach(txn => {
@@ -168,10 +185,10 @@ export default function AnalyticsPage() {
 
   // Load initial data
   useEffect(() => {
-    if (startDate && endDate) {
+    if (startDate && endDate && allTransactions.length >= 0) {
       handleApplyDateRange();
     }
-  }, [startDate, endDate]);
+  }, [startDate, endDate, allTransactions]);
 
   return (
     <div className="space-y-6">

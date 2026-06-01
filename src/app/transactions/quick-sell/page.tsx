@@ -9,9 +9,19 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { PrescriptionUploadDialog } from '@/components/PrescriptionUploadDialog';
-import { DataStore } from '@/lib/mock-data';
-import { formatCurrency } from '@/lib/export-utils';
+import { apiClient } from '@/lib/api-client';
+import { InventoryItem, Medicine } from '@/types';
+import { formatCurrency, generateInvoiceNumber } from '@/lib/export-utils';
 import { toast } from 'sonner';
+
+function medicineId(medicine: Medicine | InventoryItem['medicine'], fallbackId?: string): string {
+  return (
+    (typeof medicine._id === 'string' ? medicine._id : medicine._id?.toString?.()) ||
+    medicine.id ||
+    fallbackId ||
+    ''
+  );
+}
 
 interface SaleItem {
   medicineId: string;
@@ -36,25 +46,41 @@ export default function QuickSellPage() {
   const [showInvoice, setShowInvoice] = useState(false);
   const [lastInvoiceData, setLastInvoiceData] = useState<any>(null);
   const [profile, setProfile] = useState<any>({});
+  const [inventory, setInventory] = useState<InventoryItem[]>([]);
+  const [loadingInventory, setLoadingInventory] = useState(true);
+  const [prescriptionFiles, setPrescriptionFiles] = useState<string[]>([]);
 
-  const medicines = DataStore.getMedicines();
-  const inventory = DataStore.getInventory();
+  const loadInventory = async () => {
+    try {
+      setLoadingInventory(true);
+      const res: { data?: InventoryItem[] } = await apiClient.getInventory();
+      setInventory(res.data || []);
+    } catch (error: unknown) {
+      toast.error(error instanceof Error ? error.message : 'Failed to load inventory');
+      setInventory([]);
+    } finally {
+      setLoadingInventory(false);
+    }
+  };
 
   useEffect(() => {
-    // Load profile data
+    loadInventory();
     const savedProfile = localStorage.getItem('userProfile');
     if (savedProfile) {
       setProfile(JSON.parse(savedProfile));
     }
   }, []);
 
-  const filteredMedicines = medicines.filter(medicine =>
-    medicine.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
-    medicine.manufacturer.toLowerCase().includes(searchTerm.toLowerCase())
+  const filteredInventory = inventory.filter(
+    (item) =>
+      item.medicine.name.toLowerCase().includes(searchTerm.toLowerCase()) ||
+      item.medicine.manufacturer.toLowerCase().includes(searchTerm.toLowerCase())
   );
 
-  const addItemDirectly = (medicine: any, quantity: number = 1) => {
-    const inventoryItem = inventory.find(item => item.medicineId === medicine.id);
+  const findInventoryItem = (id: string) => inventory.find((item) => item.medicineId === id);
+
+  const addItemDirectly = (inventoryItem: InventoryItem, quantity: number = 1) => {
+    const medicine = { ...inventoryItem.medicine, id: inventoryItem.medicineId };
     if (!inventoryItem || inventoryItem.quantity < quantity) {
       toast.error('Insufficient stock available');
       return;
@@ -70,19 +96,25 @@ export default function QuickSellPage() {
     addItemToCart(medicine, quantity);
   };
 
-  const addItemToCart = (medicine: any, quantity: number) => {
-    const existingItemIndex = items.findIndex(item => item.medicineId === medicine.id);
-    
+  const addItemToCart = (medicine: Medicine, quantity: number) => {
+    const id = medicineId(medicine);
+    const existingItemIndex = items.findIndex((item) => item.medicineId === id);
+
     if (existingItemIndex >= 0) {
-      // Update existing item
       const updatedItems = [...items];
-      updatedItems[existingItemIndex].quantity += quantity;
-      updatedItems[existingItemIndex].totalPrice = updatedItems[existingItemIndex].quantity * updatedItems[existingItemIndex].unitPrice;
+      const newQty = updatedItems[existingItemIndex].quantity + quantity;
+      const stock = findInventoryItem(id)?.quantity ?? 0;
+      if (newQty > stock) {
+        toast.error('Insufficient stock available');
+        return;
+      }
+      updatedItems[existingItemIndex].quantity = newQty;
+      updatedItems[existingItemIndex].totalPrice =
+        updatedItems[existingItemIndex].quantity * updatedItems[existingItemIndex].unitPrice;
       setItems(updatedItems);
     } else {
-      // Add new item
       const newItem: SaleItem = {
-        medicineId: medicine.id,
+        medicineId: id,
         medicineName: medicine.name,
         quantity: quantity,
         unitPrice: medicine.mrp || medicine.price,
@@ -99,6 +131,7 @@ export default function QuickSellPage() {
   };
 
   const handlePrescriptionUpload = (files: string[]) => {
+    setPrescriptionFiles((prev) => [...prev, ...files]);
     if (pendingScheduleHItem) {
       toast.success('Prescription uploaded successfully. Item added to sale.');
       addItemToCart(pendingScheduleHItem.medicine, pendingScheduleHItem.quantity);
@@ -127,12 +160,18 @@ export default function QuickSellPage() {
       return;
     }
 
-    const updatedItems = items.map(item => {
+    const stock = findInventoryItem(medicineId)?.quantity ?? 0;
+    if (newQuantity > stock) {
+      toast.error('Insufficient stock available');
+      return;
+    }
+
+    const updatedItems = items.map((item) => {
       if (item.medicineId === medicineId) {
         return {
           ...item,
           quantity: newQuantity,
-          totalPrice: newQuantity * item.unitPrice
+          totalPrice: newQuantity * item.unitPrice,
         };
       }
       return item;
@@ -148,9 +187,9 @@ const calculateTax = () => {
     let totalSgst = 0;
     let totalCgst = 0;
     
-    items.forEach(item => {
-      const medicine = medicines.find(med => med.id === item.medicineId);
-      const gstRate = medicine?.gstRate || 18; // Use medicine's GST rate or default to 18%
+    items.forEach((item) => {
+      const medicine = findInventoryItem(item.medicineId)?.medicine;
+      const gstRate = medicine?.gstRate || 18;
       const itemTotal = item.totalPrice;
       const itemSgst = (itemTotal * (gstRate / 2)) / 100;
       const itemCgst = (itemTotal * (gstRate / 2)) / 100;
@@ -176,56 +215,57 @@ const calculateGrandTotal = () => {
     setIsLoading(true);
 
     try {
-      // Generate invoice number
-      const invoiceNumber = `INV-${Date.now()}`;
-      
-      // Create transaction
-      const transaction = {
-        id: Date.now().toString(),
+      const invoiceNumber = generateInvoiceNumber('sell');
+      const { sgst, cgst } = calculateTax();
+      const gstAmount = sgst + cgst;
+      const totalAmount = calculateGrandTotal();
+
+      const transactionPayload = {
         type: 'sell' as const,
         invoiceNumber,
         date: new Date().toISOString(),
-        customerName: customerName || 'Walk-in Customer',
-        customerPhone,
-        items: items.map(item => ({
+        customerName: customerName || undefined,
+        customerPhone: customerPhone || undefined,
+        items: items.map((item) => ({
           medicineId: item.medicineId,
           medicineName: item.medicineName,
           quantity: item.quantity,
           price: item.unitPrice,
           batchNo: item.batchNumber || '',
-          expiryDate: item.expiryDate || ''
+          expiryDate: item.expiryDate || '',
         })),
-        totalAmount: calculateGrandTotal(),
-        gstAmount: (() => {
-          const { sgst, cgst } = calculateTax();
-          return sgst + cgst;
-        })(),
-        paymentMethod
+        totalAmount,
+        gstAmount,
+        paymentMethod,
+        prescriptionFiles: prescriptionFiles.length > 0 ? prescriptionFiles : undefined,
       };
 
-      // Store invoice data for printing
+      const res: { data?: { invoiceNumber?: string } } = await apiClient.createTransaction(transactionPayload);
+      const savedInvoiceNumber = res.data?.invoiceNumber || invoiceNumber;
+
       setLastInvoiceData({
-        ...transaction,
-        items: items,
+        ...transactionPayload,
+        invoiceNumber: savedInvoiceNumber,
+        customerName: customerName || 'Walk-in Customer',
+        items,
         subtotal: calculateTotal(),
-        tax: calculateTax(),
-        grandTotal: calculateGrandTotal(),
-        profile: profile
+        tax: { sgst, cgst },
+        grandTotal: totalAmount,
+        profile,
       });
 
-      // Simulate API call
-      await new Promise(resolve => setTimeout(resolve, 1000));
+      await loadInventory();
 
-      toast.success(`Sale completed! Invoice: ${invoiceNumber}`);
+      toast.success(`Sale completed! Invoice: ${savedInvoiceNumber}`);
       setShowInvoice(true);
 
-      // Reset form
       setItems([]);
       setCustomerName('');
       setCustomerPhone('');
       setPaymentMethod('cash');
-    } catch (error) {
-      toast.error('Failed to complete sale');
+      setPrescriptionFiles([]);
+    } catch (error: unknown) {
+      toast.error(error instanceof Error ? error.message : 'Failed to complete sale');
     } finally {
       setIsLoading(false);
     }
@@ -281,7 +321,7 @@ const calculateGrandTotal = () => {
             </thead>
             <tbody>
               ${lastInvoiceData.items.map((item: any) => {
-                const medicine = medicines.find(med => med.id === item.medicineId);
+                const medicine = findInventoryItem(item.medicineId)?.medicine;
                 const gstRate = medicine?.gstRate || 18;
                 return `
                 <tr>
@@ -348,42 +388,55 @@ const calculateGrandTotal = () => {
                 />
               </div>
 
-              {searchTerm && (
+              {loadingInventory && searchTerm && (
+                <p className="text-sm text-gray-500">Loading inventory...</p>
+              )}
+              {searchTerm && !loadingInventory && (
                 <div className="max-h-60 overflow-y-auto border rounded-md">
-                  {filteredMedicines.map((medicine) => {
-                    const inventoryItem = inventory.find(item => item.medicineId === medicine.id);
-                    return (
-                      <div
-                        key={medicine.id}
-                        className="p-3 border-b hover:bg-gray-50"
-                      >
-                        <div className="flex justify-between items-start">
-                          <div className="flex-1">
-                            <div className="flex items-center space-x-2 mb-1">
-                              <h4 className="font-medium">{medicine.name}</h4>
-                              {medicine.isScheduleH && (
-                                <Badge variant="destructive" className="text-xs">Schedule H</Badge>
-                              )}
+                  {filteredInventory.length === 0 ? (
+                    <p className="p-3 text-sm text-gray-500">No medicines found</p>
+                  ) : (
+                    filteredInventory.map((inventoryItem) => {
+                      const medicine = inventoryItem.medicine;
+                      return (
+                        <div
+                          key={inventoryItem.medicineId}
+                          className="p-3 border-b hover:bg-gray-50"
+                        >
+                          <div className="flex justify-between items-start">
+                            <div className="flex-1">
+                              <div className="flex items-center space-x-2 mb-1">
+                                <h4 className="font-medium">{medicine.name}</h4>
+                                {medicine.isScheduleH && (
+                                  <Badge variant="destructive" className="text-xs">
+                                    Schedule H
+                                  </Badge>
+                                )}
+                              </div>
+                              <p className="text-sm text-gray-600">{medicine.manufacturer}</p>
+                              <div className="flex items-center space-x-4 mt-1">
+                                <p className="text-sm text-green-600">
+                                  MRP: {formatCurrency(medicine.mrp || medicine.price)}
+                                </p>
+                                <Badge
+                                  variant={inventoryItem.quantity > 0 ? 'default' : 'destructive'}
+                                >
+                                  Stock: {inventoryItem.quantity}
+                                </Badge>
+                              </div>
                             </div>
-                            <p className="text-sm text-gray-600">{medicine.manufacturer}</p>
-                            <div className="flex items-center space-x-4 mt-1">
-                              <p className="text-sm text-green-600">MRP: {formatCurrency(medicine.mrp || medicine.price)}</p>
-                              <Badge variant={inventoryItem && inventoryItem.quantity > 0 ? 'default' : 'destructive'}>
-                                Stock: {inventoryItem?.quantity || 0}
-                              </Badge>
-                            </div>
+                            <Button
+                              size="sm"
+                              onClick={() => addItemDirectly(inventoryItem, 1)}
+                              disabled={inventoryItem.quantity === 0}
+                            >
+                              Add Item
+                            </Button>
                           </div>
-                          <Button
-                            size="sm"
-                            onClick={() => addItemDirectly(medicine, 1)}
-                            disabled={!inventoryItem || inventoryItem.quantity === 0}
-                          >
-                            Add Item
-                          </Button>
                         </div>
-                      </div>
-                    );
-                  })}
+                      );
+                    })
+                  )}
                 </div>
               )}
             </CardContent>
@@ -496,10 +549,13 @@ const calculateGrandTotal = () => {
                 </div>
                 {items.length > 0 && (
                   <div className="text-xs text-gray-500 mt-1">
-                    GST rates: {Array.from(new Set(items.map(item => {
-                      const medicine = medicines.find(med => med.id === item.medicineId);
-                      return medicine?.gstRate || 18;
-                    }))).join('%, ')}%
+                    GST rates:{' '}
+                    {Array.from(
+                      new Set(
+                        items.map((item) => findInventoryItem(item.medicineId)?.medicine?.gstRate || 18)
+                      )
+                    ).join('%, ')}
+                    %
                   </div>
                 )}
                 <div className="flex justify-between font-bold text-lg">

@@ -1,18 +1,19 @@
 export interface Medicine {
+  _id?: string;
   id: string;
   name: string;
   expiryDate: string;
   batchNo: string;
   supplier: string;
   isScheduleH: boolean;
-  price: number; // Purchase price
-  mrp: number; // Maximum Retail Price
+  price: number;
+  mrp: number;
   stockQuantity: number;
   minStockLevel: number;
   category: string;
   manufacturer: string;
-  gstRate: number; // GST rate for this medicine (5, 12, or 18)
-  fifoLots?: MedicineLot[]; // FIFO inventory lots
+  gstRate: number;
+  fifoLots?: MedicineLot[];
 }
 
 export interface MedicineLot {
@@ -28,6 +29,7 @@ export interface MedicineLot {
 }
 
 export interface Supplier {
+  _id?: string;
   id: string;
   name: string;
   address: string;
@@ -46,6 +48,7 @@ export interface TransactionItem {
 }
 
 export interface Transaction {
+  _id?: string;
   id: string;
   type: 'sell' | 'purchase';
   items: TransactionItem[];
@@ -86,6 +89,7 @@ export interface TaxData {
 }
 
 export interface ExpiringMedicine {
+  _id?: string;
   id: string;
   name: string;
   expiryDate: string;

@@ -1,6 +1,6 @@
 'use client';
 
-import { useState, useEffect } from 'react';
+import { useState, useEffect, useCallback } from 'react';
 import { useSearchParams } from 'next/navigation';
 import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Button } from '@/components/ui/button';
@@ -8,14 +8,24 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@/components/ui/select';
 import { Badge } from '@/components/ui/badge';
-import { DataStore } from '@/lib/mock-data';
+import { apiClient } from '@/lib/api-client';
 import { Transaction } from '@/types';
 import { formatCurrency, formatDate } from '@/lib/export-utils';
+import { toast } from 'sonner';
+
+function normalizeTransaction(txn: Record<string, unknown>): Transaction {
+  const id =
+    (typeof txn._id === 'string' ? txn._id : (txn._id as { toString?: () => string })?.toString?.()) ||
+    (txn.id as string) ||
+    '';
+  return { ...(txn as Transaction), id };
+}
 
 export default function TransactionHistoryPage() {
   const searchParams = useSearchParams();
   const [transactions, setTransactions] = useState<Transaction[]>([]);
   const [filteredTransactions, setFilteredTransactions] = useState<Transaction[]>([]);
+  const [loading, setLoading] = useState(true);
   const [filters, setFilters] = useState({
     type: searchParams.get('type') || 'all',
     startDate: searchParams.get('startDate') || '',
@@ -26,72 +36,72 @@ export default function TransactionHistoryPage() {
   const [currentPage, setCurrentPage] = useState(1);
   const [itemsPerPage] = useState(10);
 
-  useEffect(() => {
-    // Load all transactions
-    const allTransactions = DataStore.getTransactions();
-    setTransactions(allTransactions);
-    
-    // Set default date range if not provided (last 1 month)
-    if (!filters.startDate || !filters.endDate) {
-      const today = new Date();
-      const oneMonthAgo = new Date();
-      oneMonthAgo.setMonth(today.getMonth() - 1);
-      
-      setFilters(prev => ({
-        ...prev,
-        startDate: prev.startDate || oneMonthAgo.toISOString().split('T')[0],
-        endDate: prev.endDate || today.toISOString().split('T')[0]
-      }));
+  const loadTransactions = useCallback(async (startDate: string, endDate: string, type: string) => {
+    try {
+      setLoading(true);
+      const apiType = type !== 'all' ? type : undefined;
+      const res: { data?: unknown[] } = await apiClient.getTransactions(
+        apiType,
+        startDate || undefined,
+        endDate || undefined
+      );
+      const data = (res.data || []).map((txn) => normalizeTransaction(txn as Record<string, unknown>));
+      setTransactions(data);
+    } catch (error: unknown) {
+      toast.error(error instanceof Error ? error.message : 'Failed to load transactions');
+      setTransactions([]);
+    } finally {
+      setLoading(false);
     }
   }, []);
 
   useEffect(() => {
-    // Apply filters
-    let filtered = transactions;
+    const today = new Date();
+    const oneMonthAgo = new Date();
+    oneMonthAgo.setMonth(today.getMonth() - 1);
 
-    // Filter by type
-    if (filters.type !== 'all') {
-      filtered = filtered.filter(txn => txn.type === filters.type);
+    const startDate = filters.startDate || oneMonthAgo.toISOString().split('T')[0];
+    const endDate = filters.endDate || today.toISOString().split('T')[0];
+
+    if (!filters.startDate || !filters.endDate) {
+      setFilters((prev) => ({
+        ...prev,
+        startDate,
+        endDate,
+      }));
+      return;
     }
 
-    // Filter by date range
-    if (filters.startDate && filters.endDate) {
-      const startDate = new Date(filters.startDate);
-      const endDate = new Date(filters.endDate);
-      endDate.setHours(23, 59, 59, 999); // Include the entire end date
-      
-      filtered = filtered.filter(txn => {
-        const txnDate = new Date(txn.date);
-        return txnDate >= startDate && txnDate <= endDate;
-      });
-    }
+    loadTransactions(startDate, endDate, filters.type);
+  }, [filters.startDate, filters.endDate, filters.type, loadTransactions]);
 
-    // Filter by payment method
+  useEffect(() => {
+    let filtered = [...transactions];
+
     if (filters.paymentMethod !== 'all') {
-      filtered = filtered.filter(txn => txn.paymentMethod === filters.paymentMethod);
+      filtered = filtered.filter((txn) => txn.paymentMethod === filters.paymentMethod);
     }
 
-    // Filter by search term
     if (filters.searchTerm) {
       const searchLower = filters.searchTerm.toLowerCase();
-      filtered = filtered.filter(txn => 
-        txn.invoiceNumber.toLowerCase().includes(searchLower) ||
-        (txn.customerName && txn.customerName.toLowerCase().includes(searchLower)) ||
-        txn.items.some(item => item.medicineName.toLowerCase().includes(searchLower))
+      filtered = filtered.filter(
+        (txn) =>
+          txn.invoiceNumber?.toLowerCase().includes(searchLower) ||
+          (txn.customerName && txn.customerName.toLowerCase().includes(searchLower)) ||
+          txn.items.some((item) => item.medicineName.toLowerCase().includes(searchLower))
       );
     }
 
-    // Sort by date (newest first)
     filtered.sort((a, b) => new Date(b.date).getTime() - new Date(a.date).getTime());
 
     setFilteredTransactions(filtered);
-    setCurrentPage(1); // Reset to first page when filters change
-  }, [transactions, filters]);
+    setCurrentPage(1);
+  }, [transactions, filters.paymentMethod, filters.searchTerm]);
 
   const handleFilterChange = (key: string, value: string) => {
-    setFilters(prev => ({
+    setFilters((prev) => ({
       ...prev,
-      [key]: value
+      [key]: value,
     }));
   };
 
@@ -99,17 +109,16 @@ export default function TransactionHistoryPage() {
     const today = new Date();
     const oneMonthAgo = new Date();
     oneMonthAgo.setMonth(today.getMonth() - 1);
-    
+
     setFilters({
       type: 'all',
       startDate: oneMonthAgo.toISOString().split('T')[0],
       endDate: today.toISOString().split('T')[0],
       paymentMethod: 'all',
-      searchTerm: ''
+      searchTerm: '',
     });
   };
 
-  // Pagination
   const totalPages = Math.ceil(filteredTransactions.length / itemsPerPage);
   const startIndex = (currentPage - 1) * itemsPerPage;
   const endIndex = startIndex + itemsPerPage;
@@ -120,14 +129,14 @@ export default function TransactionHistoryPage() {
   };
 
   const calculateTotals = () => {
-    const sales = filteredTransactions.filter(txn => txn.type === 'sell');
-    const purchases = filteredTransactions.filter(txn => txn.type === 'purchase');
-    
+    const sales = filteredTransactions.filter((txn) => txn.type === 'sell');
+    const purchases = filteredTransactions.filter((txn) => txn.type === 'purchase');
+
     return {
       totalSales: sales.reduce((sum, txn) => sum + txn.totalAmount, 0),
       totalPurchases: purchases.reduce((sum, txn) => sum + txn.totalAmount, 0),
       salesCount: sales.length,
-      purchasesCount: purchases.length
+      purchasesCount: purchases.length,
     };
   };
 
@@ -135,13 +144,11 @@ export default function TransactionHistoryPage() {
 
   return (
     <div className="space-y-6">
-      {/* Header */}
       <div>
         <h1 className="text-2xl font-bold text-[var(--brand-blue)]">Transaction History</h1>
         <p className="text-[var(--foreground)]/70 mt-1">View and manage all transactions</p>
       </div>
 
-      {/* Summary Cards */}
       <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
         <Card>
           <CardContent className="p-4">
@@ -160,7 +167,9 @@ export default function TransactionHistoryPage() {
         <Card>
           <CardContent className="p-4">
             <div className="text-sm text-gray-600">Net Profit</div>
-            <div className={`text-xl font-bold ${totals.totalSales - totals.totalPurchases >= 0 ? 'text-green-600' : 'text-red-600'}`}>
+            <div
+              className={`text-xl font-bold ${totals.totalSales - totals.totalPurchases >= 0 ? 'text-green-600' : 'text-red-600'}`}
+            >
               {formatCurrency(totals.totalSales - totals.totalPurchases)}
             </div>
             <div className="text-xs text-gray-500">For selected period</div>
@@ -175,7 +184,6 @@ export default function TransactionHistoryPage() {
         </Card>
       </div>
 
-      {/* Filters */}
       <Card>
         <CardHeader>
           <CardTitle>Filters</CardTitle>
@@ -213,7 +221,10 @@ export default function TransactionHistoryPage() {
             </div>
             <div className="space-y-2">
               <Label>Payment Method</Label>
-              <Select value={filters.paymentMethod} onValueChange={(value) => handleFilterChange('paymentMethod', value)}>
+              <Select
+                value={filters.paymentMethod}
+                onValueChange={(value) => handleFilterChange('paymentMethod', value)}
+              >
                 <SelectTrigger>
                   <SelectValue />
                 </SelectTrigger>
@@ -243,13 +254,16 @@ export default function TransactionHistoryPage() {
         </CardContent>
       </Card>
 
-      {/* Transactions List */}
       <Card>
         <CardHeader>
           <CardTitle>Transactions ({filteredTransactions.length})</CardTitle>
         </CardHeader>
         <CardContent>
-          {currentTransactions.length === 0 ? (
+          {loading ? (
+            <div className="text-center py-8">
+              <p className="text-gray-500">Loading transactions...</p>
+            </div>
+          ) : currentTransactions.length === 0 ? (
             <div className="text-center py-8">
               <p className="text-gray-500">No transactions found for the selected filters</p>
             </div>
@@ -264,23 +278,19 @@ export default function TransactionHistoryPage() {
                           {transaction.type.toUpperCase()}
                         </Badge>
                         <span className="font-medium">{transaction.invoiceNumber}</span>
-                        <span className="text-sm text-gray-500">
-                          {formatDate(transaction.date)}
-                        </span>
+                        <span className="text-sm text-gray-500">{formatDate(transaction.date)}</span>
                       </div>
-                      
+
                       {transaction.customerName && (
-                        <p className="text-sm text-gray-600 mb-1">
-                          Customer: {transaction.customerName}
-                        </p>
+                        <p className="text-sm text-gray-600 mb-1">Customer: {transaction.customerName}</p>
                       )}
-                      
+
                       <div className="text-sm text-gray-600">
                         <span>{transaction.items.length} item(s)</span>
                         <span className="mx-2">•</span>
                         <span className="capitalize">{transaction.paymentMethod}</span>
                       </div>
-                      
+
                       <div className="mt-2">
                         <details className="text-sm">
                           <summary className="cursor-pointer text-blue-600 hover:text-blue-800">
@@ -291,7 +301,8 @@ export default function TransactionHistoryPage() {
                               <div key={index} className="py-1">
                                 <span className="font-medium">{item.medicineName}</span>
                                 <span className="text-gray-500 ml-2">
-                                  {item.quantity} × {formatCurrency(item.price)} = {formatCurrency(item.quantity * item.price)}
+                                  {item.quantity} × {formatCurrency(item.price)} ={' '}
+                                  {formatCurrency(item.quantity * item.price)}
                                 </span>
                               </div>
                             ))}
@@ -299,14 +310,10 @@ export default function TransactionHistoryPage() {
                         </details>
                       </div>
                     </div>
-                    
+
                     <div className="text-right">
-                      <div className="text-lg font-bold">
-                        {formatCurrency(transaction.totalAmount)}
-                      </div>
-                      <div className="text-sm text-gray-500">
-                        GST: {formatCurrency(transaction.gstAmount)}
-                      </div>
+                      <div className="text-lg font-bold">{formatCurrency(transaction.totalAmount)}</div>
+                      <div className="text-sm text-gray-500">GST: {formatCurrency(transaction.gstAmount)}</div>
                     </div>
                   </div>
                 </div>
@@ -314,11 +321,11 @@ export default function TransactionHistoryPage() {
             </div>
           )}
 
-          {/* Pagination */}
           {totalPages > 1 && (
             <div className="flex items-center justify-between mt-6">
               <div className="text-sm text-gray-600">
-                Showing {startIndex + 1} to {Math.min(endIndex, filteredTransactions.length)} of {filteredTransactions.length} transactions
+                Showing {startIndex + 1} to {Math.min(endIndex, filteredTransactions.length)} of{' '}
+                {filteredTransactions.length} transactions
               </div>
               <div className="flex items-center space-x-2">
                 <Button

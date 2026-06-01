@@ -9,7 +9,7 @@ import { Select, SelectContent, SelectItem, SelectTrigger, SelectValue } from '@
 import { Badge } from '@/components/ui/badge';
 import { Dialog, DialogContent, DialogHeader, DialogTitle, DialogTrigger } from '@/components/ui/dialog';
 import { Alert, AlertDescription } from '@/components/ui/alert';
-import { DataStore } from '@/lib/mock-data';
+import { apiClient } from '@/lib/api-client';
 import { ExpiringMedicine } from '@/types';
 import { formatDate, formatCurrency } from '@/lib/export-utils';
 import { toast } from 'sonner';
@@ -30,10 +30,16 @@ export default function ExpiringMedicinesPage() {
   const [discountPercentage, setDiscountPercentage] = useState('');
 
   useEffect(() => {
-    // Load expiring medicines
-    const days = parseInt(daysFilter);
-    const expiringMeds = DataStore.getExpiringMedicines(days);
-    setMedicines(expiringMeds);
+    const load = async () => {
+      try {
+        const days = parseInt(daysFilter);
+        const res: any = await apiClient.getExpiringMedicines(days);
+        setMedicines(res.data || []);
+      } catch (error: any) {
+        console.error('Failed to load expiring medicines:', error);
+      }
+    };
+    load();
   }, [daysFilter]);
 
   useEffect(() => {
@@ -136,13 +142,10 @@ export default function ExpiringMedicinesPage() {
 
   const handleMarkForReturn = (medicine: ExpiringMedicine) => {
     try {
-      // Add to marked for return list
       setMarkedForReturn(prev => [...prev, medicine]);
-      
-      // Remove from filtered medicines
-      setFilteredMedicines(prev => prev.filter(m => m.id !== medicine.id));
-      setMedicines(prev => prev.filter(m => m.id !== medicine.id));
-      
+      const id = medicine._id || medicine.id;
+      setFilteredMedicines(prev => prev.filter(m => (m._id || m.id) !== id));
+      setMedicines(prev => prev.filter(m => (m._id || m.id) !== id));
       toast.success(`${medicine.name} marked for return`);
     } catch (error) {
       toast.error('Failed to mark medicine for return');

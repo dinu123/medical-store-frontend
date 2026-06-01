@@ -7,6 +7,8 @@ import { Input } from '@/components/ui/input';
 import { Label } from '@/components/ui/label';
 import Link from 'next/link';
 import { useRouter } from 'next/navigation';
+import { apiClient } from '@/lib/api-client';
+import { toast } from 'sonner';
 
 export default function LoginPage() {
   const [email, setEmail] = useState('');
@@ -19,32 +21,65 @@ export default function LoginPage() {
   const handleLogin = async (e: React.FormEvent) => {
     e.preventDefault();
     setIsLoading(true);
-    
-    // Simulate login process
-    setTimeout(() => {
-      // Store login state in localStorage
-      localStorage.setItem('isLoggedIn', 'true');
-      localStorage.setItem('userEmail', email || 'user@example.com');
-      localStorage.setItem('userName', 'John Doe');
-      
+
+    try {
+      const loginData = loginMethod === 'email' 
+        ? { email, password }
+        : { phone: mobile };
+
+      const response: any = await apiClient.login(loginData);
+
+      if (response.success && response.token) {
+        // Store auth token and user info
+        localStorage.setItem('authToken', response.token);
+        localStorage.setItem('isLoggedIn', 'true');
+        localStorage.setItem('userEmail', response.user?.email || email || 'user@example.com');
+        localStorage.setItem('userName', response.user?.ownerName || 'John Doe');
+        localStorage.setItem('userProfile', JSON.stringify(response.user));
+
+        toast.success(response.message || 'Login successful!');
+        router.push('/');
+      } else {
+        toast.error(response.message || 'Login failed');
+      }
+    } catch (error: any) {
+      toast.error(error.message || 'Login failed. Please try again.');
+    } finally {
       setIsLoading(false);
-      router.push('/');
-    }, 1000);
+    }
   };
 
-  const handleSocialLogin = (provider: string) => {
+  const handleSocialLogin = async (provider: string) => {
     setIsLoading(true);
-    
-    // Simulate social login
-    setTimeout(() => {
-      localStorage.setItem('isLoggedIn', 'true');
-      localStorage.setItem('userEmail', `user@${provider}.com`);
-      localStorage.setItem('userName', 'John Doe');
-      localStorage.setItem('loginProvider', provider);
-      
+
+    try {
+      const response: any = await apiClient.socialLogin({
+        email: email || undefined,
+        phone: mobile || undefined,
+        provider,
+        shopName: 'My Store',
+        ownerName: 'Store Owner',
+      });
+
+      if (response.success && response.token) {
+        // Store auth token and user info
+        localStorage.setItem('authToken', response.token);
+        localStorage.setItem('isLoggedIn', 'true');
+        localStorage.setItem('userEmail', response.user?.email || `user@${provider}.com`);
+        localStorage.setItem('userName', response.user?.ownerName || 'John Doe');
+        localStorage.setItem('loginProvider', provider);
+        localStorage.setItem('userProfile', JSON.stringify(response.user));
+
+        toast.success(response.message || `${provider} login successful!`);
+        router.push('/');
+      } else {
+        toast.error(response.message || 'Social login failed');
+      }
+    } catch (error: any) {
+      toast.error(error.message || 'Social login failed. Please try again.');
+    } finally {
       setIsLoading(false);
-      router.push('/');
-    }, 1000);
+    }
   };
 
   return (

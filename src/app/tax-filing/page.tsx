@@ -8,7 +8,7 @@ import { Card, CardContent, CardHeader, CardTitle } from '@/components/ui/card';
 import { Badge } from '@/components/ui/badge';
 import { Table, TableBody, TableCell, TableHead, TableHeader, TableRow } from '@/components/ui/table';
 import { Tabs, TabsContent, TabsList, TabsTrigger } from '@/components/ui/tabs';
-import { DataStore } from '@/lib/mock-data';
+import { apiClient } from '@/lib/api-client';
 import { TaxData, Transaction } from '@/types';
 import { formatCurrency, formatDate, generateTaxReport, exportTaxReport, exportDetailedTaxReport } from '@/lib/export-utils';
 import { toast } from 'sonner';
@@ -28,9 +28,10 @@ export default function TaxFilingPage() {
   const generateReport = async () => {
     setIsGenerating(true);
     try {
-      const transactions = DataStore.getTransactionsByDateRange(dateRange.startDate, dateRange.endDate);
-      const report = generateTaxReport(transactions, dateRange.startDate, dateRange.endDate);
-      setTaxData(report);
+      const res: any = await apiClient.getTaxData(dateRange.startDate, dateRange.endDate);
+      if (res.success && res.data) {
+        setTaxData(res.data);
+      }
     } catch (error) {
       console.error('Error generating tax report:', error);
       toast.error('Failed to generate tax report');

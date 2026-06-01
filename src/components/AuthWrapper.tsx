@@ -17,12 +17,11 @@ export function AuthWrapper({ children }: AuthWrapperProps) {
       const isLoggedIn = localStorage.getItem('isLoggedIn') === 'true';
       setIsAuthenticated(isLoggedIn);
 
-      // If not authenticated and not on login page, redirect to login
-      if (!isLoggedIn && pathname !== '/login') {
+      const publicPaths = ['/login', '/register'];
+
+      if (!isLoggedIn && !publicPaths.includes(pathname)) {
         router.push('/login');
-      }
-      // If authenticated and on login page, redirect to dashboard
-      else if (isLoggedIn && pathname === '/login') {
+      } else if (isLoggedIn && publicPaths.includes(pathname)) {
         router.push('/');
       }
     };
@@ -42,8 +41,8 @@ export function AuthWrapper({ children }: AuthWrapperProps) {
     );
   }
 
-  // If on login page, show login page regardless of auth status
-  if (pathname === '/login') {
+  // If on public pages, show them regardless of auth status
+  if (pathname === '/login' || pathname === '/register') {
     return <>{children}</>;
   }
 

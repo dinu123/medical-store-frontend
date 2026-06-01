@@ -11,13 +11,16 @@ import { Alert, AlertDescription } from '@/components/ui/alert';
 import { Progress } from '@/components/ui/progress';
 import { toast } from 'sonner';
 import { formatCurrency } from '@/lib/export-utils';
+import { apiClient } from '@/lib/api-client';
+import {
+  normalizeUploadTable,
+  parseExpiryDate,
+  STANDARD_UPLOAD_COLUMN_KEYS,
+  type FieldMapping,
+} from '@/lib/bulk-upload-mapping';
 
 interface CSVRow {
   [key: string]: string;
-}
-
-interface FieldMapping {
-  [appField: string]: string;
 }
 
 interface ParsedMedicine {
@@ -45,7 +48,8 @@ const APP_FIELDS = [
   { key: 'mrp', label: 'MRP', required: false },
   { key: 'supplier', label: 'Supplier', required: false },
   { key: 'isScheduleH', label: 'Schedule H (Yes/No)', required: false },
-  { key: 'minStockLevel', label: 'Min Stock Level', required: false }
+  { key: 'minStockLevel', label: 'Min Stock Level', required: false },
+  { key: 'gstRate', label: 'GST Rate', required: false },
 ];
 
 export default function BulkUploadPage() {
@@ -92,8 +96,30 @@ export default function BulkUploadPage() {
     }
   };
 
+  const applyStandardUploadResult = (
+    data: CSVRow[],
+    fieldMapping: FieldMapping,
+    options?: { isDemo?: boolean; message?: string }
+  ) => {
+    setCsvHeaders([...STANDARD_UPLOAD_COLUMN_KEYS]);
+    setCsvData(data);
+    setFieldMapping(fieldMapping);
+    setUploadStep('mapping');
+
+    const mappedCount = Object.keys(fieldMapping).length;
+    if (options?.isDemo) {
+      toast.warning(
+        'Google Vision is not set up — your image was not read. Sample spreadsheet data is shown. Export your Excel sheet as .csv and upload that file for your real medicines.'
+      );
+    }
+    toast.success(
+      options?.message ||
+        `Ready to map ${data.length} row(s). ${mappedCount} column(s) detected.`
+    );
+  };
+
   const processNonCSVFile = async (file: File, type: 'image' | 'pdf') => {
-    toast.info(`Processing ${type} file with Google Cloud Vision... This may take a moment.`);
+    toast.info(`Processing ${type} file...`);
     
     try {
       // Convert file to base64 for processing
@@ -139,24 +165,31 @@ export default function BulkUploadPage() {
       console.log('Headers extracted:', result.headers);
       console.log('Data extracted:', result.data);
       
-      setCsvHeaders(result.headers);
-      setCsvData(result.data);
-      setUploadStep('mapping');
-      
-      toast.success(result.message || `Successfully extracted data from ${type} file! Found ${result.data.length} medicines with ${result.headers.length} columns.`);
+      const rawData: CSVRow[] = result.data || [];
+      const rawHeaders = result.headers || Object.keys(rawData[0] || {});
+      const { rows: data, fieldMapping: standardMapping } = normalizeUploadTable(rawHeaders, rawData);
+
+      applyStandardUploadResult(data, standardMapping, {
+        isDemo: result.isDemo,
+        message: result.message,
+      });
     } catch (error) {
       console.error('File processing error:', error);
       const errorMessage = error instanceof Error ? error.message : 'Unknown error occurred';
       
-      // Provide helpful error messages
-      if (errorMessage.includes('No text detected')) {
+      if (errorMessage.includes('billing') || errorMessage.includes('PERMISSION_DENIED')) {
+        toast.error(
+          'Google Cloud billing is not enabled for project medical-store-ocr. Enable billing in Google Cloud Console, wait a few minutes, then retry — or upload a .csv file instead.',
+          { duration: 10000 }
+        );
+      } else if (errorMessage.includes('No text detected')) {
         toast.error(`No readable text found in the ${type} file. Please ensure the file contains clear, readable text.`);
       } else if (errorMessage.includes('No medicine data found')) {
         toast.error('No medicine data detected. Please ensure your file contains a table or list with medicine information.');
-      } else if (errorMessage.includes('credentials')) {
-        toast.error('OCR service configuration error. Please contact support.');
+      } else if (errorMessage.includes('credentials') || errorMessage.includes('not properly configured')) {
+        toast.error('OCR service is not configured. Check Medical-Store/.env.local or upload a .csv file.');
       } else {
-        toast.error(`Failed to process ${type} file: ${errorMessage}. Please try again or use a CSV file.`);
+        toast.error(`Failed to process ${type} file. Try again or upload a .csv file.`);
       }
     }
   };
@@ -184,16 +217,16 @@ export default function BulkUploadPage() {
         rows.push(row);
       }
 
-      setCsvHeaders(headers);
-      setCsvData(rows);
+      const { rows: standardRows, fieldMapping: standardMapping } = normalizeUploadTable(headers, rows);
+
+      setCsvHeaders([...STANDARD_UPLOAD_COLUMN_KEYS]);
+      setCsvData(standardRows);
+      setFieldMapping(standardMapping);
       setUploadStep('mapping');
-      toast.success(`CSV parsed successfully! Found ${rows.length} rows`);
+      toast.success(`CSV parsed successfully! Found ${standardRows.length} row(s)`);
     };
 
-    reader.onerror = () => {
-      toast.error('Error reading CSV file');
-    };
-
+    reader.onerror = () => toast.error('Error reading CSV file');
     reader.readAsText(file);
   };
 
@@ -211,30 +244,9 @@ export default function BulkUploadPage() {
   };
 
   const autoMapFields = () => {
-    const autoMapping: FieldMapping = {};
-    
-    APP_FIELDS.forEach(appField => {
-      const possibleMatches = csvHeaders.filter(header => {
-        const headerLower = header.toLowerCase();
-        const fieldLower = appField.label.toLowerCase();
-        
-        return headerLower.includes(fieldLower.split(' ')[0]) ||
-               fieldLower.includes(headerLower) ||
-               (appField.key === 'name' && (headerLower.includes('medicine') || headerLower.includes('drug'))) ||
-               (appField.key === 'batchNo' && headerLower.includes('batch')) ||
-               (appField.key === 'expiryDate' && (headerLower.includes('expiry') || headerLower.includes('exp'))) ||
-               (appField.key === 'purchasePrice' && (headerLower.includes('price') || headerLower.includes('cost'))) ||
-               (appField.key === 'mrp' && headerLower.includes('mrp')) ||
-               (appField.key === 'quantity' && (headerLower.includes('qty') || headerLower.includes('quantity')));
-      });
-
-      if (possibleMatches.length > 0) {
-        autoMapping[appField.key] = possibleMatches[0];
-      }
-    });
-
-    setFieldMapping(autoMapping);
-    toast.success('Fields auto-mapped based on column names');
+    const standardMapping = buildStandardFieldMapping(csvData);
+    setFieldMapping(standardMapping);
+    toast.success(`Auto-mapped ${Object.keys(standardMapping).length} standard field(s)`);
   };
 
   const validateAndParseData = () => {
@@ -246,44 +258,54 @@ export default function BulkUploadPage() {
       const medicine: Partial<ParsedMedicine> = {};
 
       // Validate required fields
-      APP_FIELDS.filter(field => field.required).forEach(field => {
+      APP_FIELDS.filter((field) => field.required).forEach((field) => {
         const csvField = fieldMapping[field.key];
+
+        // Invoices/images rarely include category — use default when unmapped
+        if (field.key === 'category' && (!csvField || csvField === '__not_mapped__')) {
+          medicine.category = 'General';
+          return;
+        }
+
         if (!csvField || csvField === '__not_mapped__' || !row[csvField]?.trim()) {
           validationErrors.push(`Row ${rowNumber}: Missing required field "${field.label}"`);
           return;
         }
-        
+
         const value = row[csvField].trim();
-        
+
         switch (field.key) {
           case 'quantity':
-          case 'minStockLevel':
-            const numValue = parseInt(value);
+          case 'minStockLevel': {
+            const numValue = parseInt(value, 10);
             if (isNaN(numValue) || numValue < 0) {
               validationErrors.push(`Row ${rowNumber}: Invalid ${field.label} "${value}"`);
             } else {
-              (medicine as any)[field.key] = numValue;
+              (medicine as Record<string, unknown>)[field.key] = numValue;
             }
             break;
+          }
           case 'purchasePrice':
-          case 'mrp':
-            const priceValue = parseFloat(value);
+          case 'mrp': {
+            const priceValue = parseFloat(value.replace(/,/g, ''));
             if (isNaN(priceValue) || priceValue < 0) {
               validationErrors.push(`Row ${rowNumber}: Invalid ${field.label} "${value}"`);
             } else {
-              (medicine as any)[field.key] = priceValue;
+              (medicine as Record<string, unknown>)[field.key] = priceValue;
             }
             break;
-          case 'expiryDate':
-            const date = new Date(value);
-            if (isNaN(date.getTime())) {
+          }
+          case 'expiryDate': {
+            const parsedDate = parseExpiryDate(value);
+            if (!parsedDate) {
               validationErrors.push(`Row ${rowNumber}: Invalid date format "${value}"`);
             } else {
-              medicine[field.key] = date.toISOString().split('T')[0];
+              medicine.expiryDate = parsedDate;
             }
             break;
+          }
           default:
-            (medicine as any)[field.key] = value;
+            (medicine as Record<string, unknown>)[field.key] = value;
         }
       });
 
@@ -295,12 +317,25 @@ export default function BulkUploadPage() {
           
           switch (field.key) {
             case 'mrp':
-            case 'purchasePrice':
-              const priceValue = parseFloat(value);
+            case 'purchasePrice': {
+              const priceValue = parseFloat(value.replace(/,/g, ''));
               if (!isNaN(priceValue) && priceValue >= 0) {
-                (medicine as any)[field.key] = priceValue;
+                (medicine as Record<string, unknown>)[field.key] = priceValue;
               }
               break;
+            }
+            case 'gstRate': {
+              const gstValue = parseFloat(value.replace(/[%]/g, ''));
+              if (!isNaN(gstValue) && gstValue >= 0) {
+                (medicine as Record<string, unknown>)[field.key] = gstValue;
+              }
+              break;
+            }
+            case 'expiryDate': {
+              const parsedDate = parseExpiryDate(value);
+              if (parsedDate) medicine.expiryDate = parsedDate;
+              break;
+            }
             case 'minStockLevel':
               const numValue = parseInt(value);
               if (!isNaN(numValue) && numValue >= 0) {
@@ -356,68 +391,33 @@ export default function BulkUploadPage() {
     setUploadProgress(0);
 
     try {
-      // Load existing inventory data
-      const existingInventory = JSON.parse(localStorage.getItem('bulkUploadedMedicines') || '[]');
-      
-      // Extract unique suppliers from parsed data
-      const newSuppliers = new Set<string>();
-      parsedData.forEach(medicine => {
-        if (medicine.supplier && medicine.supplier !== 'Unknown Supplier') {
-          newSuppliers.add(medicine.supplier);
-        }
-      });
-
-      // Load existing suppliers
-      const existingSuppliers = JSON.parse(localStorage.getItem('suppliers') || '[]');
-      const existingSupplierNames = new Set(existingSuppliers.map((s: any) => s.name));
-
-      // Add new suppliers that don't exist
-      const suppliersToAdd = Array.from(newSuppliers).filter(name => !existingSupplierNames.has(name));
-      const newSupplierEntries = suppliersToAdd.map(name => ({
-        id: `supplier_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
-        name,
-        address: 'Address to be updated',
-        contactNumber: 'Contact to be updated',
-        gstinNumber: '',
-        createdAt: new Date().toISOString()
-      }));
-
-      // Save updated suppliers list
-      if (newSupplierEntries.length > 0) {
-        const updatedSuppliers = [...existingSuppliers, ...newSupplierEntries];
-        localStorage.setItem('suppliers', JSON.stringify(updatedSuppliers));
-        toast.info(`Added ${newSupplierEntries.length} new suppliers: ${suppliersToAdd.join(', ')}`);
-      }
-      
-      // Convert parsed data to medicine format
-      const newMedicines = parsedData.map(medicine => ({
-        id: `bulk_${Date.now()}_${Math.random().toString(36).substr(2, 9)}`,
+      const medicines = parsedData.map((medicine) => ({
         name: medicine.name,
-        expiryDate: medicine.expiryDate,
-        batchNo: medicine.batchNo,
-        supplier: medicine.supplier,
-        isScheduleH: medicine.isScheduleH,
-        price: medicine.purchasePrice,
-        mrp: medicine.mrp,
-        stockQuantity: medicine.quantity,
-        minStockLevel: medicine.minStockLevel,
-        category: medicine.category,
         manufacturer: medicine.manufacturer,
-        gstRate: 12 // Default GST rate
+        category: medicine.category,
+        batchNo: medicine.batchNo,
+        expiryDate: medicine.expiryDate,
+        supplier: medicine.supplier || 'Unknown Supplier',
+        isScheduleH: medicine.isScheduleH || false,
+        price: medicine.purchasePrice,
+        mrp: medicine.mrp || medicine.purchasePrice * 1.2,
+        stockQuantity: medicine.quantity,
+        minStockLevel: medicine.minStockLevel || 10,
+        gstRate: (medicine as any).gstRate || 12,
       }));
 
-      // Simulate upload process with progress
-      for (let i = 0; i <= parsedData.length; i++) {
-        await new Promise(resolve => setTimeout(resolve, 50));
-        setUploadProgress((i / parsedData.length) * 100);
-      }
+      // Simulate progress
+      const progressInterval = setInterval(() => {
+        setUploadProgress(prev => Math.min(prev + 10, 90));
+      }, 100);
 
-      // Save to localStorage
-      const updatedInventory = [...existingInventory, ...newMedicines];
-      localStorage.setItem('bulkUploadedMedicines', JSON.stringify(updatedInventory));
-      
-      toast.success(`Successfully uploaded ${parsedData.length} medicines to inventory!`);
-      
+      await apiClient.bulkUploadMedicines(medicines);
+
+      clearInterval(progressInterval);
+      setUploadProgress(100);
+
+      toast.success(`Successfully uploaded ${medicines.length} medicines to inventory!`);
+
       // Reset form
       setUploadStep('upload');
       setFile(null);
@@ -427,18 +427,11 @@ export default function BulkUploadPage() {
       setParsedData([]);
       setUploadProgress(0);
       setErrors([]);
-      
-      if (fileInputRef.current) {
-        fileInputRef.current.value = '';
-      }
+      if (fileInputRef.current) fileInputRef.current.value = '';
 
-      // Redirect to inventory page after a short delay
-      setTimeout(() => {
-        window.location.href = '/inventory';
-      }, 2000);
-      
-    } catch (error) {
-      toast.error('Failed to upload stock data');
+      setTimeout(() => { window.location.href = '/inventory'; }, 1500);
+    } catch (error: any) {
+      toast.error(error.message || 'Failed to upload stock data');
       setUploadStep('preview');
     }
   };
@@ -500,7 +493,7 @@ export default function BulkUploadPage() {
           <CardContent className="space-y-4">
             <Alert>
               <AlertDescription>
-                Upload your medicine inventory data using CSV files, PDF documents, or images. For CSV files, ensure they include columns for medicine name, manufacturer, category, batch number, expiry date, quantity, and prices. For PDF/image files, Google Cloud Vision AI will extract the data automatically from tables and text.
+                Upload a CSV, PDF, or image. Column names in the mapping step are always the same standard fields (name, manufacturer, batchNo, etc.). CSV and invoice/image data are converted automatically before mapping.
               </AlertDescription>
             </Alert>
 
@@ -542,7 +535,7 @@ export default function BulkUploadPage() {
         <Card>
           <CardHeader>
             <div className="flex items-center justify-between">
-              <CardTitle>Map CSV Fields</CardTitle>
+              <CardTitle>Map Columns to Fields</CardTitle>
               <div className="space-x-2">
                 <Button variant="outline" onClick={autoMapFields}>
                   Auto Map Fields
@@ -556,7 +549,8 @@ export default function BulkUploadPage() {
           <CardContent className="space-y-4">
             <Alert>
               <AlertDescription>
-                Map the columns from your uploaded file to the corresponding fields in the application. Required fields must be mapped.
+                Dropdown options are always standard fields: name, manufacturer, batchNo, quantity, purchasePrice, etc.
+                If you uploaded an image without Google Vision configured, only sample demo rows are loaded — use a .csv file for your real stock.
               </AlertDescription>
             </Alert>
 
@@ -576,7 +570,7 @@ export default function BulkUploadPage() {
                     </SelectTrigger>
                     <SelectContent>
                       <SelectItem value="__not_mapped__">-- Not Mapped --</SelectItem>
-                      {csvHeaders.map((header) => (
+                      {STANDARD_UPLOAD_COLUMN_KEYS.map((header) => (
                         <SelectItem key={header} value={header}>
                           {header}
                         </SelectItem>
