@@ -262,8 +262,20 @@ export default function BulkUploadPage() {
         const csvField = fieldMapping[field.key];
 
         // Invoices/images rarely include category — use default when unmapped
-        if (field.key === 'category' && (!csvField || csvField === '__not_mapped__')) {
+        if (field.key === 'category' && (!csvField || csvField === '__not_mapped__' || !row[csvField]?.trim())) {
           medicine.category = 'General';
+          return;
+        }
+
+        // For batchNo — use default when missing in image
+        if (field.key === 'batchNo' && (!csvField || csvField === '__not_mapped__' || !row[csvField]?.trim())) {
+          medicine.batchNo = `BATCH-${Date.now()}-${index}`;
+          return;
+        }
+
+        // For manufacturer — use default when missing in image
+        if (field.key === 'manufacturer' && (!csvField || csvField === '__not_mapped__' || !row[csvField]?.trim())) {
+          medicine.manufacturer = 'Unknown';
           return;
         }
 
@@ -298,7 +310,10 @@ export default function BulkUploadPage() {
           case 'expiryDate': {
             const parsedDate = parseExpiryDate(value);
             if (!parsedDate) {
-              validationErrors.push(`Row ${rowNumber}: Invalid date format "${value}"`);
+              // Default to 1 year from now if OCR can't parse the date
+              const defaultDate = new Date();
+              defaultDate.setFullYear(defaultDate.getFullYear() + 1);
+              medicine.expiryDate = defaultDate.toISOString().split('T')[0];
             } else {
               medicine.expiryDate = parsedDate;
             }

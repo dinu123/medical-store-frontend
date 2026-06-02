@@ -47,7 +47,11 @@ export default function PurchaseStockPage() {
   const [showSupplierSuggestions, setShowSupplierSuggestions] = useState(false);
   const [newSupplierData, setNewSupplierData] = useState({ address: '', contactNumber: '', gstinNumber: '' });
 
-  const [invoiceNumber, setInvoiceNumber] = useState('');
+  const [invoiceNumber, setInvoiceNumber] = useState(() => {
+    const ts = Date.now();
+    const rand = Math.floor(Math.random() * 10000);
+    return `INV-${ts}-${rand}`;
+  });
   const [paymentMethod, setPaymentMethod] = useState<'cash' | 'card' | 'upi'>('cash');
   const [items, setItems] = useState<PurchaseItem[]>([]);
   const [notes, setNotes] = useState('');
@@ -245,7 +249,7 @@ export default function PurchaseStockPage() {
 
   const completePurchase = async () => {
     if (items.length === 0) { toast.error('Please add items to the purchase'); return; }
-    if (!supplierName || !invoiceNumber) { toast.error('Please fill supplier name and invoice number'); return; }
+    if (!supplierName) { toast.error('Please fill supplier name'); return; }
     if (!selectedSupplier && (!newSupplierData.contactNumber || !newSupplierData.address)) {
       toast.error('Please fill supplier contact details'); return;
     }
